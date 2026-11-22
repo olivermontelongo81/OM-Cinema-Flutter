@@ -1,0 +1,491 @@
+
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_core/firebase_core.dart';
+import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
+
+import 'firebase_options.dart';
+
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await Firebase.initializeApp(
+    options: DefaultFirebaseOptions.currentPlatform,
+  );
+  runApp(const MyApp());
+}
+
+class MyApp extends StatelessWidget {
+  const MyApp({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      title: 'OM Cinema',
+      debugShowCheckedModeBanner: false,
+      theme: ThemeData(
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: Colors.indigo,
+        ),
+        useMaterial3: true,
+      ),
+      home: StreamBuilder<User?>(
+        stream: FirebaseAuth.instance.authStateChanges(),
+        builder: (context, snapshot) {
+          if (snapshot.connectionState == ConnectionState.waiting) {
+            return const Scaffold(
+              body: Center(child: CircularProgressIndicator()),
+            );
+          }
+          return snapshot.data == null
+              ? const Acceso()
+              : const Catalogo();
+        },
+      ),
+    );
+  }
+}
+
+class Acceso extends StatefulWidget {
+  const Acceso({super.key});
+
+  @override
+  State<Acceso> createState() => _AccesoState();
+}
+
+class _AccesoState extends State<Acceso> {
+  final correo = TextEditingController();
+  final clave = TextEditingController();
+  bool registro = false;
+  bool cargando = false;
+
+  Future<void> ingresar() async {
+    if (correo.text.trim().isEmpty || clave.text.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Completa los campos.')),
+      );
+      return;
+    }
+
+    setState(() => cargando = true);
+    try {
+      if (registro) {
+        await FirebaseAuth.instance.createUserWithEmailAndPassword(
+          email: correo.text.trim(),
+          password: clave.text,
+        );
+      } else {
+        await FirebaseAuth.instance.signInWithEmailAndPassword(
+          email: correo.text.trim(),
+          password: clave.text,
+        );
+      }
+    } on FirebaseAuthException catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('No se pudo ingresar: ${e.message}')),
+      );
+    } finally {
+      if (mounted) setState(() => cargando = false);
+    }
+  }
+
+  @override
+  void dispose() {
+    correo.dispose();
+    clave.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('OM Cinema')),
+      body: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 400),
+          child: ListView(
+            shrinkWrap: true,
+            padding: const EdgeInsets.all(24),
+            children: [
+              const Icon(Icons.movie, size: 75, color: Colors.indigo),
+              const SizedBox(height: 16),
+              const Text(
+                'Bienvenido a OM Cinema',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  fontSize: 25,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              const SizedBox(height: 25),
+              TextField(
+                controller: correo,
+                keyboardType: TextInputType.emailAddress,
+                decoration: const InputDecoration(
+                  labelText: 'Correo electrónico',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: clave,
+                obscureText: true,
+                decoration: const InputDecoration(
+                  labelText: 'Contraseña',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 18),
+              FilledButton(
+                onPressed: cargando ? null : ingresar,
+                child: Text(registro ? 'Registrarme' : 'Ingresar'),
+              ),
+              TextButton(
+                onPressed: () => setState(() => registro = !registro),
+                child: Text(registro
+                    ? 'Ya tengo cuenta'
+                    : 'Crear una cuenta nueva'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class Catalogo extends StatefulWidget {
+  const Catalogo({super.key});
+
+  @override
+  State<Catalogo> createState() => _CatalogoState();
+}
+
+class _CatalogoState extends State<Catalogo> {
+  final peliculas = FirebaseFirestore.instance.collection('peliculas');
+  bool administracion = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('OM Cinema'),
+        backgroundColor: Theme.of(context).colorScheme.primaryContainer,
+        actions: [
+          PopupMenuButton<String>(
+            onSelected: (valor) async {
+              if (valor == 'salir') {
+                await FirebaseAuth.instance.signOut();
+              } else {
+                setState(() => administracion = valor == 'administrar');
+              }
+            },
+            itemBuilder: (context) => const [
+              PopupMenuItem(
+                value: 'catalogo',
+                child: Text('Catálogo'),
+              ),
+              PopupMenuItem(
+                value: 'administrar',
+                child: Text('Administrar películas'),
+              ),
+              PopupMenuItem(
+                value: 'salir',
+                child: Text('Cerrar sesión'),
+              ),
+            ],
+          ),
+        ],
+      ),
+      body: administracion
+          ? const Administracion()
+          : StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+              stream: peliculas.snapshots(),
+              builder: (context, snapshot) {
+                if (snapshot.hasError) {
+                  return const Center(
+                    child: Text('Error al consultar Firebase.'),
+                  );
+                }
+                if (!snapshot.hasData) {
+                  return const Center(
+                    child: CircularProgressIndicator(),
+                  );
+                }
+
+                final docs = snapshot.data!.docs;
+
+                return ListView(
+                  padding: const EdgeInsets.all(16),
+                  children: [
+                    const Text(
+                      'Catálogo de películas',
+                      style: TextStyle(
+                        fontSize: 24,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    if (docs.isEmpty)
+                      const Text('Todavía no hay películas.'),
+                    ...docs.map((doc) {
+                      final p = doc.data();
+                      final imagen = (p['imagen'] ?? '').toString();
+
+                      return Card(
+                        child: ListTile(
+                          leading: imagen.isEmpty
+                              ? const Icon(Icons.movie, size: 45)
+                              : Image.network(
+                                  imagen,
+                                  width: 55,
+                                  height: 75,
+                                  fit: BoxFit.cover,
+                                  errorBuilder: (_, __, ___) =>
+                                      const Icon(Icons.movie),
+                                ),
+                          title: Text((p['titulo'] ?? '').toString()),
+                          subtitle: Text((p['genero'] ?? '').toString()),
+                          onTap: () => Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (_) => Detalle(pelicula: p),
+                            ),
+                          ),
+                        ),
+                      );
+                    }),
+                  ],
+                );
+              },
+            ),
+    );
+  }
+}
+
+class Detalle extends StatelessWidget {
+  final Map<String, dynamic> pelicula;
+
+  const Detalle({super.key, required this.pelicula});
+
+  @override
+  Widget build(BuildContext context) {
+    final imagen = (pelicula['imagen'] ?? '').toString();
+
+    return Scaffold(
+      appBar: AppBar(title: const Text('Detalle de película')),
+      body: ListView(
+        padding: const EdgeInsets.all(20),
+        children: [
+          if (imagen.isNotEmpty)
+            Image.network(
+              imagen,
+              height: 260,
+              fit: BoxFit.contain,
+              errorBuilder: (_, __, ___) =>
+                  const Icon(Icons.movie, size: 100),
+            ),
+          const SizedBox(height: 20),
+          Text(
+            (pelicula['titulo'] ?? '').toString(),
+            style: const TextStyle(
+              fontSize: 25,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+          const SizedBox(height: 12),
+          Text('Año: ${pelicula['anio'] ?? 'No registrado'}'),
+          Text('Director: ${pelicula['director'] ?? 'No registrado'}'),
+          Text('Género: ${pelicula['genero'] ?? 'No registrado'}'),
+          const SizedBox(height: 15),
+          const Text(
+            'Sinopsis',
+            style: TextStyle(
+              fontSize: 19,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+          Text((pelicula['sinopsis'] ?? 'Sin sinopsis').toString()),
+        ],
+      ),
+    );
+  }
+}
+
+class Administracion extends StatefulWidget {
+  const Administracion({super.key});
+
+  @override
+  State<Administracion> createState() => _AdministracionState();
+}
+
+class _AdministracionState extends State<Administracion> {
+  final titulo = TextEditingController();
+  final anio = TextEditingController();
+  final director = TextEditingController();
+  final genero = TextEditingController();
+  final sinopsis = TextEditingController();
+  final imagen = TextEditingController();
+
+  final peliculas = FirebaseFirestore.instance.collection('peliculas');
+  bool guardando = false;
+
+  Future<void> guardar() async {
+    if (titulo.text.trim().isEmpty ||
+        anio.text.trim().isEmpty ||
+        director.text.trim().isEmpty ||
+        genero.text.trim().isEmpty ||
+        sinopsis.text.trim().isEmpty ||
+        imagen.text.trim().isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Completa todos los campos.')),
+      );
+      return;
+    }
+
+    final url = Uri.tryParse(imagen.text.trim());
+    final anioNumero = int.tryParse(anio.text.trim());
+
+    if (anioNumero == null ||
+        anioNumero < 1888 ||
+        anioNumero > DateTime.now().year + 5 ||
+        url == null ||
+        !url.hasAuthority ||
+        (url.scheme != 'https' && url.scheme != 'http')) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Revisa el año y la URL de imagen.')),
+      );
+      return;
+    }
+
+    setState(() => guardando = true);
+
+    try {
+      // Solicitud HTTP para comprobar la URL de la imagen.
+      final respuesta = await http.get(url).timeout(
+        const Duration(seconds: 10),
+      );
+      if (respuesta.statusCode != 200) {
+        throw Exception('La URL no respondió correctamente.');
+      }
+
+      await peliculas.add({
+        'titulo': titulo.text.trim(),
+        'anio': anioNumero,
+        'director': director.text.trim(),
+        'genero': genero.text.trim(),
+        'sinopsis': sinopsis.text.trim(),
+        'imagen': imagen.text.trim(),
+        'creadoEn': FieldValue.serverTimestamp(),
+      });
+
+      titulo.clear();
+      anio.clear();
+      director.clear();
+      genero.clear();
+      sinopsis.clear();
+      imagen.clear();
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Película guardada en Firebase.')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('No se pudo guardar: $e')),
+      );
+    } finally {
+      if (mounted) setState(() => guardando = false);
+    }
+  }
+
+  @override
+  void dispose() {
+    titulo.dispose();
+    anio.dispose();
+    director.dispose();
+    genero.dispose();
+    sinopsis.dispose();
+    imagen.dispose();
+    super.dispose();
+  }
+
+  Widget campo(String etiqueta, TextEditingController controlador,
+      {int lineas = 1}) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: TextField(
+        controller: controlador,
+        maxLines: lineas,
+        decoration: InputDecoration(
+          labelText: etiqueta,
+          border: const OutlineInputBorder(),
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ListView(
+      padding: const EdgeInsets.all(18),
+      children: [
+        const Text(
+          'Administrar películas',
+          style: TextStyle(fontSize: 23, fontWeight: FontWeight.bold),
+        ),
+        const SizedBox(height: 15),
+        campo('Título', titulo),
+        campo('Año de estreno', anio),
+        campo('Director', director),
+        campo('Género', genero),
+        campo('Sinopsis', sinopsis, lineas: 3),
+        campo('URL de imagen', imagen),
+        FilledButton(
+          onPressed: guardando ? null : guardar,
+          child: Text(guardando ? 'Guardando...' : 'Agregar película'),
+        ),
+        const SizedBox(height: 25),
+        const Text(
+          'Eliminar películas',
+          style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+        ),
+        StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+          stream: peliculas.snapshots(),
+          builder: (context, snapshot) {
+            if (snapshot.hasError) {
+              return const Text('Error al consultar películas.');
+            }
+            if (!snapshot.hasData) {
+              return const Center(child: CircularProgressIndicator());
+            }
+
+            return Column(
+              children: snapshot.data!.docs.map((doc) {
+                final p = doc.data();
+                return ListTile(
+                  title: Text((p['titulo'] ?? '').toString()),
+                  trailing: IconButton(
+                    icon: const Icon(Icons.delete, color: Colors.red),
+                    onPressed: () async {
+                      try {
+                        await doc.reference.delete();
+                      } catch (e) {
+                        if (!context.mounted) return;
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(content: Text('Error al eliminar: $e')),
+                        );
+                      }
+                    },
+                  ),
+                );
+              }).toList(),
+            );
+          },
+        ),
+      ],
+    );
+  }
+}
